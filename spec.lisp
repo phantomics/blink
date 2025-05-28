@@ -1,0 +1,407 @@
+;;;; spec.lisp
+
+(in-package #:blink)
+
+(specify-vex-idiom
+ blink
+
+ ;; system variables and default state of a Blink workspace
+ (system :workspace-defaults '(:index-origin 1 :print-precision 10 :comparison-tolerance double-float-epsilon
+                               :rngs (list :generators :rng (aref *rng-names* 1)))
+         :output-printed nil :base-state '(:output-stream '*standard-output*)
+         :variables *system-variables* :supplemental-numeric-chars ".eEjJrR" :supplemental-token-chars "._"
+         :overloaded-assignment-form (list :op :lateral #\⍠))
+
+ (entities (divider :break    :match '(#\; #\Newline #\Return))
+           (section :body     :base t
+                              :divide (lambda (type collected)
+                                        (case type
+                                          (:break (cons nil (cons (if (first collected)
+                                                                      (cons (first collected)
+                                                                            (second collected))
+                                                                      (second collected))
+                                                                  (cddr collected))))
+                                          (:axdiv (error "Misplaced ; axis separator in program body.")))))
+           (section :comment  :exclusive t :functional-divider :break
+                              :start (lambda (string index)
+                                       (and (char= #\/ (aref string index))
+                                            (or (zerop index)
+                                                (member (aref string (1- index))
+                                                        '(#\  #\Tab #\Newline #\Return)))
+                                            (lambda (string index)
+                                              (or (= index (1- (length string)))
+                                                  (member (aref string index)
+                                                          '(#\Newline #\Return) :test #'char=))))))
+           (section :string   :exclusive t
+                              :start (lambda (string index)
+                                       (and (char= #\" (aref string index))
+                                            (lambda (string index) (char= #\" (aref string index)))))
+                              :render (lambda (string start end)
+                                        (let ((length (- end start 1)))
+                                          (if (= 1 length) (aref string (1+ start))
+                                              ;; expressing a one-length string like 'a' returns character #\a
+                                              (let ((output))
+                                                (loop :for i :from (1+ start) :below end
+                                                      :when (char= #\" (aref string i)) :do (decf length))
+                                                (setf output (make-string length))
+                                                (loop :for i :from (1+ start) :below end :for ix :from 0
+                                                      :do (setf (aref output ix) (aref string i))
+                                                          (when (char= #\" (aref string i))
+                                                            (incf i)))
+                                                output)))))
+           (section :closure  :delimit "()"
+                              :build  (lambda (collected) (cons nil (cons nil collected)))
+                              :divide (lambda (type collected)
+                                        (case type
+                                          (:break (cons nil (cons (taper collected)
+                                                                  (cddr collected))))))
+                              :format (lambda (collected)
+                                        (if (second collected)
+                                            (cons (cons (cons :sv (reverse (cons (first collected)
+                                                                                 (second collected))))
+                                                        (third collected))
+                                                  (cdddr collected))
+                                            (cons (cons (first collected) (second collected))
+                                                  (cdddr collected)))))
+           (section :function :delimit "{}"
+                              :build  (lambda (collected) (cons nil (cons nil collected)))
+                              :divide (lambda (type collected)
+                                        (case type
+                                          (:break (cons nil (cons (taper collected)
+                                                                  (cddr collected))))))
+                              :format (lambda (collected)
+                                        (cons (cons (list :fn (list :meta :symbols nil)
+                                                          (reverse (taper collected)))
+                                                    (third collected))
+                                              (cdddr collected))))
+           (section :axes     :delimit "[]"
+                              :build  (lambda (collected) (cons nil (cons nil (cons nil collected))))
+                              :divide (lambda (type collected)
+                                        (case type
+                                          (:break (cons nil (cons nil (cons (cons (reverse
+                                                                                   (taper collected))
+                                                                                  (third collected))
+                                                                            (cdddr collected)))))))
+                              :format (lambda (collected)
+                                        (cons (cons (cons :ax (reverse (cons (reverse
+                                                                              (taper collected))
+                                                                             (third collected))))
+                                                    (fourth collected))
+                                              (cddddr collected)))))
+
+ ;; parameters for describing and documenting the idiom in different ways; currently, these options give
+ ;; the order in which output from the blocks of tests is printed out for the (test) and (demo) options
+ (profiles (:test :main-functions))
+
+ ;; utilities for compiling the language
+ (utilities :match-blank-character (let ((cstring (coerce '(#\  #\Tab) 'string)))
+                                     (lambda (char) (position char cstring :test #'char=)))
+            ;; set the language's valid blank, newline characters and token characters
+            :match-numeric-character
+            (let ((other-chars))
+              (lambda (char idiom)
+                (unless other-chars (setf other-chars (of-system idiom :supplemental-numeric-chars)))
+                (or (digit-char-p char) (position char other-chars :test #'char=))))
+            :match-token-character
+            (let ((other-chars))
+              (lambda (char idiom)
+                (unless other-chars (setf other-chars (of-system idiom :supplemental-token-chars)))
+                (or (is-alphanumeric char) (position char other-chars :test #'char=))))
+            ;; match characters that can only appear in homogenous symbols, this is needed so that
+            ;; things like ⍺⍺.⍵⍵, ⍺∇⍵ or ⎕NS⍬ can work without spaces between the symbols
+            :match-uniform-token-character (lambda (char) (position char "⍺⍵⍶⍹∇⍬" :test #'char=))
+            ;; match characters specifically representing function/operator arguments, this is needed
+            ;; so ⍵.path.to will work
+            :match-arg-token-character (lambda (char) (position char "⍺⍵⍶⍹" :test #'char=))
+            ;; match characters used to link parts of paths together like namespace.path.to,
+            ;; this is needed so that ⍵.path.to will work
+            :match-path-joining-character (let ((chars))
+                                            (lambda (char idiom)
+                                              (unless chars (setf chars (of-system idiom :path-separators)))
+                                              (position char chars :test #'char=)))
+            ;; overloaded numeric characters may be functions or operators or may be part of a numeric token
+            ;; depending on their context
+            :match-overloaded-numeric-character (lambda (char) (char= char #\.))
+            ;; macro to process lexical specs of functions and operators
+            :process-fn-op-specs #'process-fnspecs
+            :test-parameters '((:space unit-test-staging))
+            :number-formatter #'parse-apl-number-string
+            :format-value #'format-value
+            ;; process system state input passed as with (april (with (:state ...)) "...")
+            :preprocess-state-input
+            (lambda (state)
+              (when (getf state :count-from)
+                (setf (getf state :index-origin) (getf state :count-from)))
+              state)
+            ;; converts parts of the system state into lists that will form part of the local lexical
+            ;; environment in which the compiled APL code runs, i.e. the (let) form into which
+            ;; the APL-generating macros are expanded
+            :system-lexical-environment-interface
+            (lambda (state)
+              ;; the index origin, print precision and output stream values are
+              ;; passed into the local lexical environment
+              (append (list (list (find-symbol "OUTPUT-STREAM" *package-name-string*)
+                                  (or (getf state :print-to)
+                                      (second (getf state :output-stream)))))
+                      (loop :for (key value) :on *system-variables* :by #'cddr
+                            :collect (list (find-symbol (string-upcase key) *package-name-string*)
+                                           (or (getf state key) `(inwsd ,value))))))
+            ;; :lexer-postprocess #'lexer-postprocess
+            :compile-form #'compile-form
+            ;; TODO: the (inws) forms below are a clumsy hack
+            :output-function (provision-function-builder
+                              :default-args `((inws |x|) &optional (inws |y|) (inws |z|))
+                              :enclose-operator
+                              (lambda (arg-symbols) (declare (ignore arg-symbols))
+                                #'identity))
+            :postprocess-compiled
+            (lambda (state &rest inline-arguments)
+              (lambda (form)
+                ;; form assignment accounts for cases like (april-c "+" 1 2)
+                (let* ((form (if (not (and (= 1 (length form)) (characterp (first form))
+                                           (of-lexicons this-idiom (first form) :functions)))
+                                 form (list (build-call-form (first form)))))
+                       ;; operands for cases like (april-c "{⍵⍵ ⍺⍺/⍵}" #'+ #'- #(1 2 3 4 5))
+                       (operands (when (and inline-arguments (listp (first form))
+                                            (eql 'olambda (caar form)))
+                                   (cadar form)))
+                       (final-form (if inline-arguments
+                                       (if operands
+                                           `(a-call (a-comp :op ,(first (last form))
+                                                            ,(first inline-arguments)
+                                                            ,@(if (intersection operands '(⍵⍵ ⍹))
+                                                                  (list (second inline-arguments))))
+                                                    ,@(if (intersection operands '(⍵⍵ ⍹))
+                                                          (cddr inline-arguments)
+                                                          (rest inline-arguments)))
+                                           `(a-call ,(first (last form)) ,@inline-arguments))
+                                       (first (last form)))))
+                  (append (butlast form)
+                          (list (append (list 'a-out final-form)
+                                        (append (list :print-precision 'print-precision)
+                                                (when (getf state :unrendered) (list :unrendered t))
+                                                (when (getf state :print) (list :print-to 'output-stream))
+                                                (when (getf state :output-printed)
+                                                  (list :output-printed
+                                                        (getf state :output-printed))))))))))
+            :postprocess-value
+            (lambda (form state)
+              (append (list 'a-out form)
+                      (append (list :print-precision 'print-precision)
+                              (when (getf state :print) (list :print-to 'output-stream))
+                              (when (getf state :output-printed)
+                                (list :output-printed (getf state :output-printed))))))
+            :process-stored-symbol
+            (lambda (symbol space is-function)
+              (if is-function (let ((found-sym (intern symbol space)))
+                                (when (and found-sym (boundp found-sym)
+                                           (not (fboundp found-sym)))
+                                  (makunbound found-sym))
+                                (setf (symbol-function found-sym) #'dummy-nargument-function))
+                  (let ((found-sym (intern symbol space)))
+                    (when (fboundp found-sym) (fmakunbound found-sym))
+                    (unless (and found-sym (boundp found-sym))
+                      (proclaim (list 'special (intern symbol space)))
+                      (set (intern symbol space) nil)))))
+            ;; build multiple output of April expression, rendering unless (:unrendered) option is passed
+            :process-multiple-outputs
+            (lambda (outputs space &optional will-render)
+              (list (cons 'values (mapcar (lambda (return-var)
+                                            (let ((symbol (intern (lisp->camel-case return-var)
+                                                                  space)))
+                                              (if (not will-render)
+                                                  symbol `(process-ns-output (vrender ,symbol)))))
+                                          outputs))))
+            :build-variable-declarations #'build-variable-declarations
+            :build-compiled-code (provision-code-builder 'in-blink-workspace)
+            :assign-val-sym 'ws-assign-val :assign-fun-sym 'ws-assign-fun)
+ (functions
+  (with (:name :main-functions)
+        (:tests-profile :title "Main Function Tests")
+        (:demo-profile :title "Main Function Demos"
+                       :description "Main functions."))
+  ( + (has :titles ("Flip" "Add"))
+      (ambivalent (λω (make-instance 'vader-permute :base omega :index-origin 0))
+                  (scalar-function +))
+      (meta (monadic :id 0 :inverse (ac-wrap :m (scalar-function conjugate)))
+            (dyadic :id 0 :commutative t :inverse (ac-wrap :d (scalar-function -))
+                    :inverse-right (ac-wrap :d (scalar-function (reverse-op -)))
+                    :inverse-commuted (ac-wrap :m (scalar-function (λω (/ omega 2))))))
+      (tests (is "+5" 5)
+             (is "+5J2" #C(5 -2))
+             (is "1+1" 2)
+             (is "1+1 2 3" #(2 3 4))))
+  ( - (has :titles ("Negate" "Subtract"))
+      (ambivalent (scalar-function -)
+                  (scalar-function (reverse-op -)))
+      (meta (monadic :id 0 :inverse (ac-wrap :m (scalar-function (reverse-op -))))
+            (dyadic :id 0 :inverse (ac-wrap :d (scalar-function (reverse-op -)))
+                    :inverse-right (ac-wrap :d (scalar-function +)) :scan-alternating #'-))
+      (tests (is "2-1" 1)
+             (is "7-2 3 4" #(5 4 3))))
+  ( * (has :titles ("First" "Times"))
+      (ambivalent (λω (make-instance 'vader-pick :base omega))
+                  (scalar-function *))
+      (meta (monadic :id 1)
+            (dyadic :id 1 :commutative t :inverse (ac-wrap :d (scalar-function /))
+                    :inverse-right (ac-wrap :d (scalar-function (reverse-op /)))
+                    :inverse-commuted (ac-wrap :m (scalar-function sqrt))))
+      (tests (is "*20 40 60" 20)
+             (is "2*3" 6)
+             (is "4 5*8 9" #(32 45))))
+  ( % (has :titles ("Reciprocal" "Divide"))
+      (ambivalent (scalar-function /) ;; (apl-divide division-method))
+                  (scalar-function /)) ;; (apl-divide division-method)))
+      (meta (primary :implicit-args (division-method) :scan-alternating #'/)
+            (monadic :id 1 :inverse (ac-wrap :m (scalar-function (apl-divide division-method))))
+            (dyadic :id 1 :inverse (ac-wrap :d (scalar-function (apl-divide division-method)))
+                    :inverse-right (ac-wrap :d (scalar-function *)) :scan-alternating #'/))
+      (tests (is "6%2" 3)
+             (is "12%6 3 2" #(2 4 6))
+             (is "%2 4 8" #(1/2 1/4 1/8))))
+  ( @ (has :titles ("Atom" "Apply Once" "Index Item/At"))
+      (ambivalent #'is-atom (λωα (typecase alpha
+                                   (function (funcall alpha omega))
+                                   (t (funcall (at-index 0 nil) alpha omega))))))
+  ;; ( . (has :titles ("Apply/Make Dictionary/Value" "Index/Of")))
+  ;; ( $ (has :titles ("Format" "Format/Form")))
+  ( ^ (has :titles ("Shape" "Power"))
+      (ambivalent (λω (make-instance 'vader-shape :base omega))
+                  (scalar-function (reverse-op :dyadic apl-expt)))
+      (meta (monadic :id 1 :inverse (ac-wrap :m (scalar-function apl-log)))
+            (dyadic :id 1 :inverse (ac-wrap :d (scalar-function apl-log))
+                    :inverse-right (ac-wrap :d (scalar-function (λωα (apl-expt alpha (/ omega)))))))
+      (tests (is "^1 2 3" 3)
+             (is "2^4" 16)))
+  (\| (has :titles ("Reverse" "Max"))
+      (ambivalent (make-instance 'vader-turn :base omega :index-origin 0
+                                             :axis (or (first axes) :last))
+                  (scalar-function (reverse-op max)))
+      (meta (primary :implicit-args (comparison-tolerance))
+            (monadic)
+            (dyadic :id most-negative-double-float :commutative t
+                    :inverse-commuted (ac-wrap :m (scalar-function identity))))
+      (tests (is "|1 2 3" #(3 2 1))
+             (is "3|0 1 2 3 4 5" #(3 3 3 3 4 5))))
+  ( & (has :titles ("Where" "Minimum"))
+      (ambivalent (λω (make-instance 'vader-where :base omega :index-origin 0))
+                  (scalar-function (reverse-op min)))
+      (meta (primary :implicit-args (comparison-tolerance))
+            (monadic)
+            (dyadic :id most-positive-double-float :commutative t
+                    :inverse-commuted (ac-wrap :m (scalar-function identity))))
+      (tests (is "&1 0 0 0 1" #(1 5))
+             (is "3&0 1 2 3 4 5" #(0 1 2 3 3 3))))
+  (\~ (has :titles ("Not" "Match"))
+      (ambivalent (scalar-function binary-not)
+                  (λωα (make-instance 'vader-compare :base (vector omega alpha)
+                                                     :comparison-tolerance comparison-tolerance)))
+      (meta (monadic :inverse (ac-wrap :m (scalar-function binary-not))))
+      (tests (is "~1 0 1" #(0 1 0))
+             (is "3~3" 1)))
+  ( < (has :titles ("Grade Down" "Less"))
+      (ambivalent (λω (make-instance 'vader-grade :base omega :index-origin 0 :inverse t))
+                  (scalar-function (boolean-op (compare-by '< comparison-tolerance))
+                                   :binary-output t))
+      (meta (primary :implicit-args (comparison-tolerance))
+            (dyadic :id 0))
+      (tests (is "3<1 2 3 4 5" #*00011)))
+  ( = (has :titles ("Group" "Equal"))
+      (ambivalent (λω (funcall (operate-grouping (lambda (a b) (declare (ignore b)) a) 0) omega))
+                  (scalar-function (boolean-op (scalar-compare comparison-tolerance))
+                                   :binary-output t))
+      (meta (primary :implicit-args (comparison-tolerance))
+            (dyadic :id 1 :commutative t))
+      (tests (is "3=1 2 3 4 5" #*00100)
+             (is "'cat'='hat'" #*011)))
+  ( > (has :titles ("Grade Up" "More"))
+      (ambivalent (λω (make-instance 'vader-grade :base omega :index-origin 0))
+                  (scalar-function (boolean-op (compare-by '> comparison-tolerance))
+                                   :binary-output t))
+      (meta (primary :implicit-args (comparison-tolerance))
+            (dyadic :id 0))
+      (tests (is "3>1 2 3 4 5" #*11000)))
+  ( ? (has :titles ("Range" "Find/Function Inverse"))
+      (ambivalent (λω (make-instance 'vader-unique :base omega))
+                  (λωα (make-instance 'vader-index :base omega :argument alpha :index-origin 0)))
+      ;; TODO: add function inverse case
+      (meta (primary :implicit-args (index-origin))
+            (monadic :inverse (λω (inverse-count-to omega 0))))
+      (tests (is "?1 2 3 4 5 1 2 8 9 10 11 7 8 11 12" #(1 2 3 4 5 8 9 10 11 7 12))
+             (is "3?1 2 3 4 5 6" 3)))
+  (\# (has :titles ("Count" "Take"))
+      (ambivalent (λω (make-instance 'vader-shape :base omega))
+                  (λωα (make-instance 'vader-reshape :base omega :argument alpha)))
+      (tests (is "#1" 1)
+             (is "#1 2 3" #(3))
+             (is "3#2" #(2 2 2))
+             (is "3#3" #(3 3 3))))
+  (\, (has :titles ("Enlist" "Catenate or Laminate"))
+      (ambivalent (λω (make-instance 'vader-pare :base omega :index-origin index-origin
+                                                 :axis (first axes)))
+                  (λωα (make-instance
+                        'vader-catenate :base (if (eq omega :arg-vector)
+                                                  alpha (vector alpha omega))
+                                        :index-origin index-origin
+                                        :axis (or (first axes) :last))))
+      (meta (primary :axes axes :implicit-args (index-origin))
+            (dyadic :on-axis :last :id #()))
+      (tests (is ",5" #(5))))
+  ( _ (has :titles ("Floor" "Drop"))
+      (ambivalent (scalar-function (apl-floor comparison-tolerance))
+                  (λωα (make-instance 'vader-section :base omega :argument alpha :index-origin 0
+                                                     :inverse t :axis :last)))
+      (meta (primary :implicit-args (comparison-tolerance)) ;; index-origin))
+            (monadic);; :inverse (λωχ nil))
+            (dyadic :on-axis :last :selective-assignment-compatible t :selective-assignment-function t
+                    :implicit-args (comparison-tolerance))
+            )
+      (tests (is "_5.5" 5)
+             (is "3_1 2 3 4 5" #(4 5))))
+  ( ! (has :titles ("Enumerate" "Rotate"))
+      (ambivalent (λω (count-to omega 0))
+                  (λωα (make-instance 'vader-turn :base omega :argument alpha :index-origin 0
+                                                  :axis :last)))
+      (meta (primary :axes axes :implicit-args (index-origin))
+            (monadic :on-axis :last :inverse #'identity)
+            (dyadic :id 0 :on-axis :last
+                    :inverse (λωαχ (make-instance 'vader-turn :base omega :argument alpha
+                                                              :inverse t :index-origin 0
+                                                              :axis :last))))
+      (tests (is "!3" #(1 2 3))
+             (is "3!1" 1)
+             (is "3!1 2 3 4 5" #(4 5 1 2 3))))
+  (\: (has :title "Assign")
+      (symbolic :special-lexical-form-assign)
+      (tests ))
+  )
+ 
+ (operators
+  (with (:name :lexical-operators-lateral)
+        (:tests-profile :title "Lateral Operator Tests")
+        (:demo-profile :title "Lateral Operator Demos"
+                       :description "Lateral operators take a single operand function to their left, hence the name 'lateral.' The combination of operator and function yields another function which may be applied to one or two arguments depending on the operator."))
+  (\' (has :title "Each")
+      (lateral (lambda (operand) `(operate-each (sub-lex ,operand))))
+      (tests (is "!'1 2 3" #(#*0 #(0 1) #(0 1 2)))))
+  ( / (has :title "Over")
+      (lateral (lambda (operand)
+                 (values `(op-compose 'vacomp-reduce :left (sub-lex ,operand)
+                                                     :index-origin index-origin)
+                         '(:axis))))
+      (tests (is "+/1 2 3 4 5" 15)))
+  (\\ (has :title "Scan")
+      (lateral (lambda (operand) (values `(op-compose 'vacomp-scan :left (sub-lex ,operand)
+                                                                   :index-origin index-origin
+                                                                   :inverse nil)
+                                         '(:axis))))
+      (tests (is "+\\5" 5)
+             (is "+\\1 2 3" #(1 3 6))))
+  ( ⍠ (has :title "Amend / Call Compose")
+      (lateral (lambda (operand) `(operate-variant (sub-lex ,operand))))))
+
+ )
+
+(blink-create-workspace common)
+(blink-create-workspace unit-test-staging)
+
