@@ -2,7 +2,7 @@
 
 (defpackage #:blink
   (:use #:cl #:april #:aplesque #:vex #:varray)
-  (:shadowing-import-from #:april #:taper #:process-fnspecs #:parse-apl-number-string
+  (:shadowing-import-from #:april #:foldin #:process-fnspecs #:parse-apl-number-string
                           #:format-value #:compile-form #:provision-function-builder
                           #:build-variable-declarations
                           #:provision-code-builder #:is-alphanumeric

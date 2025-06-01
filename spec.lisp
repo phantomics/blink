@@ -53,7 +53,7 @@
                               :build  (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
                                         (case type
-                                          (:break (cons nil (cons (taper collected)
+                                          (:break (cons nil (cons (foldin collected)
                                                                   (cddr collected))))))
                               :format (lambda (collected)
                                         (if (second collected)
@@ -67,11 +67,11 @@
                               :build  (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
                                         (case type
-                                          (:break (cons nil (cons (taper collected)
+                                          (:break (cons nil (cons (foldin collected)
                                                                   (cddr collected))))))
                               :format (lambda (collected)
                                         (cons (cons (list :fn (list :meta :symbols nil)
-                                                          (reverse (taper collected)))
+                                                          (reverse (foldin collected)))
                                                     (third collected))
                                               (cdddr collected))))
            (section :axes     :delimit "[]"
@@ -79,12 +79,12 @@
                               :divide (lambda (type collected)
                                         (case type
                                           (:break (cons nil (cons nil (cons (cons (reverse
-                                                                                   (taper collected))
+                                                                                   (foldin collected))
                                                                                   (third collected))
                                                                             (cdddr collected)))))))
                               :format (lambda (collected)
                                         (cons (cons (cons :ax (reverse (cons (reverse
-                                                                              (taper collected))
+                                                                              (foldin collected))
                                                                              (third collected))))
                                                     (fourth collected))
                                               (cddddr collected)))))
