@@ -9,17 +9,16 @@
  (system :workspace-defaults '(:index-origin 0 :print-precision 10 :comparison-tolerance double-float-epsilon
                                :rngs (list :generators :rng (aref *rng-names* 1)))
          :output-printed nil :base-state '(:output-stream '*standard-output*)
-         :variables *system-variables* ;; :overloaded-assignment-form (list :op :lateral #\⍠)
-         )
+         :variables *system-variables*)
 
- (entities (token   :blank    :process (let ((space-chars (coerce '(#\  #\Tab) 'string)))
-                                         (lambda (string index end scratch tokens idiom)
-                                           (declare (ignore scratch idiom))
-                                           (loop :while (and (< index end)
-                                                             (position (aref string index) space-chars))
-                                                 :do (incf index))
-                                           (values tokens index))))
-           (token   :number   :process (lambda (string index end scratch tokens idiom)
+ (entities (token   :blank    :process (lambda (props string index end scratch tokens idiom)
+                                         (declare (ignore scratch idiom))
+                                         (loop :while (and (< index end)
+                                                           (find-char string index (getf props :spacers)))
+                                               :do (incf index))
+                                         (values tokens index))
+                              :spacers (coerce '(#\  #\Tab) 'string))
+           (token   :number   :process (lambda (props string index end scratch tokens idiom)
                                          ;; (print (list :bi index string (aref string index)))
                                          (let ((start index))
                                            (loop :while (and (< index end)
@@ -27,7 +26,8 @@
                                                                  ;; minus may begin a number
                                                                  (and (= index start)
                                                                       (char= #\- (aref string index)))
-                                                                 (position (aref string index) "._eEjJrR")))
+                                                                 (find-char string index
+                                                                            (getf props :charset))))
                                                  :do (vector-push (aref string index) scratch)
                                                      (incf index))
 
@@ -42,8 +42,9 @@
 
                                            (and (not (zerop (fill-pointer scratch)))
                                                 (let ((out (parse-apl-number-string scratch)))
-                                                  (and out (values (cons out tokens) index)))))))
-           (token   :glyph    :process #'process-glyph-token)
+                                                  (and out (values (cons out tokens) index))))))
+                              :charset "._eEjJrR")
+           (token   :glyph    :process #'process-glyph-token :spacers (coerce '(#\  #\Tab) 'string))
            (token   :symbol   :process #'process-symbol-token)
 
            (divider :break    :match '(#\; #\Newline #\Return))

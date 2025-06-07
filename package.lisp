@@ -8,9 +8,9 @@
                           #:compile-form #:provision-function-builder
                           #:build-variable-declarations
                           #:provision-code-builder #:is-alphanumeric
-                          #:inws #:inwsd #:reverse-op
-                          #:λω #:λωα
-                          #:a-out #:scalar-function #:liminally-controlled
+                          #:inws #:inwsd #:reverse-op #:find-char
+                          #:λω #:λωα #:compare-by
+                          #:a-out #:scalar-function #:liminally-controlled #:apl-if
                           #:omega #:alpha
                           #:binary-not #:scalar-compare #:apl-expt #:apl-floor #:count-to
                           #:at-index #:sub-aliasing #:ac-wrap

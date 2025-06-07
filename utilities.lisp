@@ -101,6 +101,7 @@
   (op-compose 'vacomp-each :left operand))
 
 (defun operate-variant (operand)
+  "This is a variant operator used to implement the combinatorics of ':, /: and \\:. It transforms the three adverbs into their variants"
   (lambda (omega &optional alpha)
     (let ((varray (funcall operand omega alpha))
           (count (ash (first (shape-of omega)) -1)))
@@ -121,19 +122,21 @@
            (make-instance 'vacomp-each :left  (vacmp-left varray) :alpha (vacmp-alpha varray)
                                        :omega (make-instance 'vader-enclose :base (vacmp-omega varray)))))))))
 
-(defun process-glyph-token (string index end scratch tokens idiom)
+(defun process-glyph-token (props string index end scratch tokens idiom)
   (declare (ignore scratch end))
   ;;; (print (list :x index string (< index (length string))))
   (let* ((operator-mod) (char (aref string index))
          (prior-space (and (not (zerop index))
-                           (member (aref string (1- index)) '(#\  #\Tab) :test #'char=)))
+                           ;; (member (aref string (1- index)) '(#\  #\Tab) :test #'char=)
+                           (find-char string (1- index) (getf props :spacers))))
          (prefix (cond ((and (of-lexicons idiom char :operators)
                              (not (or prior-space (zerop index))) ;; adverbs may not have a preceding space
-                             (or (symbolp (first tokens)) ;; the prior token is a symbol or token
+                             (or (symbolp (first tokens))    ;; the prior token is a symbol or token
                                  (and (listp (first tokens)) ;; symbols are checked for function identity later
                                       (member (caar tokens) '(:fn :op)))))
                         (when (char= #\: (aref string (1+ index)))
                           ;; set the operator modification in case it's followed by :
+                          ;; there can be no space between the adverb character and :, as per K norms
                           (setf operator-mod '(:op :lateral #\⍠))
                           (incf index)) ;; increment the index to skip past the following :
                         :op)
@@ -150,24 +153,23 @@
                                                (list char)))))))
     (when out (push out tokens))
     (when operator-mod (push operator-mod tokens))
-
     (values tokens (1+ index))))
 
 (let ((id-vars) (id-cons))
   (flet ((match-varisym-char (char &optional first)
            ;; match regular symbols used for assigned variable/function names
-           (or (is-alphanumeric char) (char= char #\_) ;; ¯
+           (or (is-alphanumeric char) (char= char #\_)
                (and (not first) (char= #\. char)))))
     
-    (defun process-symbol-token (string index end scratch tokens idiom)
-      "Process characters that may make up part of a symbol token. This is complex enough it is implementd here instead of directly inside the April idiom spec."
+    (defun process-symbol-token (props string index end scratch tokens idiom)
+      "Process characters that may make up part of a symbol token. This is complex enough it is implemented here instead of directly inside the April idiom spec."
       (let ((symout) (path-start) (pre-symbol))
         (unless id-vars (setf id-vars (rest (assoc :variable (idiom-symbols idiom)))))
         (unless id-cons (setf id-cons (rest (assoc :constant (idiom-symbols idiom)))))
 
         ;; match regular symbols used for variable/function names; may continue a path
         (unless (or symout (not (match-varisym-char (aref string index) (not path-start))))
-          (when (char= #\⎕ (aref string index)) (setf pre-symbol t)) ;; identify quad-prefixed names
+          (when (char= #\` (aref string index)) (setf quoted-symbol t)) ;; identify quad-prefixed names
 
           ;; if a path is already started, as for ⍵.a.b, the symbol may begin with .,
           ;; otherwise the symbol is not valid; paths also may not start with a number
