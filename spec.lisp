@@ -6,13 +6,48 @@
  blink
 
  ;; system variables and default state of a Blink workspace
- (system :workspace-defaults '(:index-origin 1 :print-precision 10 :comparison-tolerance double-float-epsilon
+ (system :workspace-defaults '(:index-origin 0 :print-precision 10 :comparison-tolerance double-float-epsilon
                                :rngs (list :generators :rng (aref *rng-names* 1)))
          :output-printed nil :base-state '(:output-stream '*standard-output*)
-         :variables *system-variables* :supplemental-numeric-chars ".eEjJrR" :supplemental-token-chars "._"
-         :overloaded-assignment-form (list :op :lateral #\⍠))
+         :variables *system-variables* ;; :overloaded-assignment-form (list :op :lateral #\⍠)
+         )
 
- (entities (divider :break    :match '(#\; #\Newline #\Return))
+ (entities (token   :blank    :process (let ((space-chars (coerce '(#\  #\Tab) 'string)))
+                                         (lambda (string index end scratch tokens idiom)
+                                           (declare (ignore scratch idiom))
+                                           (loop :while (and (< index end)
+                                                             (position (aref string index) space-chars))
+                                                 :do (incf index))
+                                           (values tokens index))))
+           (token   :number   :process (lambda (string index end scratch tokens idiom)
+                                         ;; (print (list :bi index string (aref string index)))
+                                         (let ((start index))
+                                           (loop :while (and (< index end)
+                                                             (or (digit-char-p (aref string index))
+                                                                 ;; minus may begin a number
+                                                                 (and (= index start)
+                                                                      (char= #\- (aref string index)))
+                                                                 (position (aref string index) "._eEjJrR")))
+                                                 :do (vector-push (aref string index) scratch)
+                                                     (incf index))
+
+                                           ;; handle cases like 1 2 .3; decimals without a preceding 0
+                                           ;; (when (and (listp (first tokens))
+                                           ;;            (eq :op  (first (first tokens)))
+                                           ;;            (eq :#\. (third (first tokens)))
+                                           ;;            (not (zerop start))
+                                           ;;            (char= #\. (aref string (1- start))))
+                                           ;;   (setf (aref scratch 0) #\.)
+                                           ;;   (pop tokens))
+
+                                           (and (not (zerop (fill-pointer scratch)))
+                                                (let ((out (parse-apl-number-string scratch)))
+                                                  (and out (values (cons out tokens) index)))))))
+           (token   :glyph    :process #'process-glyph-token)
+           (token   :symbol   :process #'process-symbol-token)
+
+           (divider :break    :match '(#\; #\Newline #\Return))
+
            (section :body     :base t
                               :divide (lambda (type collected)
                                         (case type
@@ -36,7 +71,7 @@
                               :start (lambda (string index)
                                        (and (char= #\" (aref string index))
                                             (lambda (string index) (char= #\" (aref string index)))))
-                              :render (lambda (string start end)
+                              :format (lambda (string start end)
                                         (let ((length (- end start 1)))
                                           (if (= 1 length) (aref string (1+ start))
                                               ;; expressing a one-length string like 'a' returns character #\a
@@ -50,12 +85,12 @@
                                                             (incf i)))
                                                 output)))))
            (section :closure  :delimit "()"
-                              :build  (lambda (collected) (cons nil (cons nil collected)))
+                              :create (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
-                                        (case type
-                                          (:break (cons nil (cons (foldin collected)
-                                                                  (cddr collected))))))
-                              :format (lambda (collected)
+                                        (declare (ignore type))
+                                        (cons nil (cons (foldin collected)
+                                                        (cddr collected))))
+                              :finish (lambda (collected)
                                         (if (second collected)
                                             (cons (cons (cons :sv (reverse (cons (first collected)
                                                                                  (second collected))))
@@ -64,25 +99,24 @@
                                             (cons (cons (first collected) (second collected))
                                                   (cdddr collected)))))
            (section :function :delimit "{}"
-                              :build  (lambda (collected) (cons nil (cons nil collected)))
+                              :create (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
-                                        (case type
-                                          (:break (cons nil (cons (foldin collected)
-                                                                  (cddr collected))))))
-                              :format (lambda (collected)
+                                        (declare (ignore type))
+                                        (cons nil (cons (foldin collected)
+                                                        (cddr collected))))
+                              :finish (lambda (collected)
                                         (cons (cons (list :fn (list :meta :symbols nil)
                                                           (reverse (foldin collected)))
                                                     (third collected))
                                               (cdddr collected))))
            (section :axes     :delimit "[]"
-                              :build  (lambda (collected) (cons nil (cons nil (cons nil collected))))
+                              :create (lambda (collected) (cons nil (cons nil (cons nil collected))))
                               :divide (lambda (type collected)
-                                        (case type
-                                          (:break (cons nil (cons nil (cons (cons (reverse
-                                                                                   (foldin collected))
-                                                                                  (third collected))
-                                                                            (cdddr collected)))))))
-                              :format (lambda (collected)
+                                        (declare (ignore type))
+                                        (cons nil (cons nil (cons (cons (reverse (foldin collected))
+                                                                        (third collected))
+                                                                  (cdddr collected)))))
+                              :finish (lambda (collected)
                                         (cons (cons (cons :ax (reverse (cons (reverse
                                                                               (foldin collected))
                                                                              (third collected))))
@@ -94,39 +128,10 @@
  (profiles (:test :main-functions))
 
  ;; utilities for compiling the language
- (utilities :match-blank-character (let ((cstring (coerce '(#\  #\Tab) 'string)))
-                                     (lambda (char) (position char cstring :test #'char=)))
-            ;; set the language's valid blank, newline characters and token characters
-            :match-numeric-character
-            (let ((other-chars))
-              (lambda (char idiom)
-                (unless other-chars (setf other-chars (of-system idiom :supplemental-numeric-chars)))
-                (or (digit-char-p char) (position char other-chars :test #'char=))))
-            :match-token-character
-            (let ((other-chars))
-              (lambda (char idiom)
-                (unless other-chars (setf other-chars (of-system idiom :supplemental-token-chars)))
-                (or (is-alphanumeric char) (position char other-chars :test #'char=))))
-            ;; match characters that can only appear in homogenous symbols, this is needed so that
-            ;; things like ⍺⍺.⍵⍵, ⍺∇⍵ or ⎕NS⍬ can work without spaces between the symbols
-            :match-uniform-token-character (lambda (char) (position char "⍺⍵⍶⍹∇⍬" :test #'char=))
-            ;; match characters specifically representing function/operator arguments, this is needed
-            ;; so ⍵.path.to will work
-            :match-arg-token-character (lambda (char) (position char "⍺⍵⍶⍹" :test #'char=))
-            ;; match characters used to link parts of paths together like namespace.path.to,
-            ;; this is needed so that ⍵.path.to will work
-            :match-path-joining-character (let ((chars))
-                                            (lambda (char idiom)
-                                              (unless chars (setf chars (of-system idiom :path-separators)))
-                                              (position char chars :test #'char=)))
-            ;; overloaded numeric characters may be functions or operators or may be part of a numeric token
-            ;; depending on their context
-            :match-overloaded-numeric-character (lambda (char) (char= char #\.))
-            ;; macro to process lexical specs of functions and operators
-            :process-fn-op-specs #'process-fnspecs
+ (utilities :process-fn-op-specs #'process-fnspecs
             :test-parameters '((:space unit-test-staging))
             :number-formatter #'parse-apl-number-string
-            :format-value #'format-value
+            ;; :format-value #'format-value
             ;; process system state input passed as with (april (with (:state ...)) "...")
             :preprocess-state-input
             (lambda (state)
@@ -371,10 +376,25 @@
       (tests (is "!3" #(1 2 3))
              (is "3!1" 1)
              (is "3!1 2 3 4 5" #(4 5 1 2 3))))
+  (\\ (has :title "Print")
+      (monadic (λω (a-out omega :print-precision 10 :print-to *standard-output*
+                           :print-assignment t :with-newline t)))
+      (meta (primary)
+            (monadic :prior-space t)))
   (\: (has :title "Assign")
       (symbolic :special-lexical-form-assign)
       (tests ))
   )
+
+ (statements
+  (with (:name :lexical-statements)
+        (:tests-profile :title "Statement Tests")
+        (:demo-profile :title "Statements Demos"
+                       :description "Statements are lexical forms that govern the execution of programs."))
+  ($ (has :title "If")
+     (unitary (lambda (axes) (cons 'apl-if axes)))
+     (tests (is "$[1;2;3]" 2)
+            (is "$[0;2;3]" 3))))
  
  (operators
   (with (:name :lexical-operators-lateral)
@@ -397,8 +417,12 @@
                                          '(:axis))))
       (tests (is "+\\5" 5)
              (is "+\\1 2 3" #(1 3 6))))
+
   ( ⍠ (has :title "Amend / Call Compose")
-      (lateral (lambda (operand) `(operate-variant (sub-lex ,operand))))))
+      (lateral (lambda (operand) `(operate-variant (sub-lex ,operand))))
+      (test (is "1 2+/:1 2 3 4 5" #(#(2 3) #(3 4) #(4 5) #(5 6) #(6 7)))
+            (is "1 2+\\:1 2 3 4 5" #(#(2 3 4 5 6) #(3 4 5 6 7)))
+            (is "2 3 4,/:5 6 7" #(#(2 3 4 5) #(2 3 4 6) #(2 3 4 7)) ))))
 
  )
 

@@ -19,7 +19,6 @@
 
 (defparameter *package-name-string* (package-name *package*))
 
-
 (let ((this-package (package-name *package*)))
   (defmacro in-blink-workspace (name &body body)
     "Macro that interns symbols in the current workspace; works in tandem with ⊏ reader macro."
@@ -102,22 +101,90 @@
   (op-compose 'vacomp-each :left operand))
 
 (defun operate-variant (operand)
-  (lambda (item &optional alpha)
-    (let ((varray (funcall operand item alpha)))
-      (typecase varray
-        (vacomp-each
-         (let* ((pairs (ash (first (vader-shape item)) -1)))
+  (lambda (omega &optional alpha)
+    (let ((varray (funcall operand omega alpha))
+          (count (ash (first (shape-of omega)) -1)))
+      (flet ((left (oo aa) (declare (ignore aa)) oo))
+        (typecase varray
+          (vacomp-each
+           ;; (let ((arvec (make-instance 'vapri-apro-vector :repeat 2 :origin 1 :number count)))
+           ;; (make-instance 'vacomp-each
+           ;;                :left  (lambda (item) (make-instance 'vacomp-reduce :left operand :omega item))
+           ;;                :omega (make-instance 'vader-partition :argument arvec :axis :last :base omega))
            (make-instance 'vacomp-each
-                          :left (lambda (item) (make-instance 'vader-reduce :left operand :omega item))
-                          :omega (make-instance 'vader-partition
-                                                :base (vader-base varray)
-                                                :argument (make-instance 'vapri-apro-vector
-                                                                         :number pairs :repeat 2)))))
-        (vacomp-reduce
-         (make-instance 'vacomp-each :left (varray::vacmp-left varray)
-                                     :omega (varray::vacmp-omega varray)
-                                     :alpha (make-instance 'vader-enclose :base (varray::vacmp-alpha varray))))
-        (vacomp-scan
-         (make-instance 'vacomp-each :left (varray::vacmp-left varray)
-                                     :omega (make-instance 'vader-enclose :base (varray::vacmp-omega varray))
-                                     :alpha (varray::vacmp-alpha varray)))))))
+                          :left  (lambda (item) (make-instance 'vacomp-reduce :left operand :omega item))
+                          :omega (make-instance 'vacomp-stencil :right 2 :omega omega :left #'left)))
+          (vacomp-reduce
+           (make-instance 'vacomp-each :left  (vacmp-left varray) :omega (vacmp-omega varray)
+                                       :alpha (make-instance 'vader-enclose :base (vacmp-alpha varray))))
+          (vacomp-scan
+           (make-instance 'vacomp-each :left  (vacmp-left varray) :alpha (vacmp-alpha varray)
+                                       :omega (make-instance 'vader-enclose :base (vacmp-omega varray)))))))))
+
+(defun process-glyph-token (string index end scratch tokens idiom)
+  (declare (ignore scratch end))
+  ;;; (print (list :x index string (< index (length string))))
+  (let* ((operator-mod) (char (aref string index))
+         (prior-space (and (not (zerop index))
+                           (member (aref string (1- index)) '(#\  #\Tab) :test #'char=)))
+         (prefix (cond ((and (of-lexicons idiom char :operators)
+                             (not (or prior-space (zerop index))) ;; adverbs may not have a preceding space
+                             (or (symbolp (first tokens)) ;; the prior token is a symbol or token
+                                 (and (listp (first tokens)) ;; symbols are checked for function identity later
+                                      (member (caar tokens) '(:fn :op)))))
+                        (when (char= #\: (aref string (1+ index)))
+                          ;; set the operator modification in case it's followed by :
+                          (setf operator-mod '(:op :lateral #\⍠))
+                          (incf index)) ;; increment the index to skip past the following :
+                        :op)
+                       ((of-lexicons idiom char :functions)
+                        :fn)
+                       ((of-lexicons idiom char :statements) :st)))
+         (tag (if (eq :op prefix)
+                  (cond ((of-lexicons idiom char :operators-lateral) :lateral)
+                        ((of-lexicons idiom char :operators-pivotal) :pivotal))
+                  (and (eq :st prefix) :unitary)))
+         (out (or (and (not (eq :op prefix))
+                       (determine-symbolic-form idiom char))
+                  (and prefix (cons prefix (if tag (list tag char)
+                                               (list char)))))))
+    (when out (push out tokens))
+    (when operator-mod (push operator-mod tokens))
+
+    (values tokens (1+ index))))
+
+(let ((id-vars) (id-cons))
+  (flet ((match-varisym-char (char &optional first)
+           ;; match regular symbols used for assigned variable/function names
+           (or (is-alphanumeric char) (char= char #\_) ;; ¯
+               (and (not first) (char= #\. char)))))
+    
+    (defun process-symbol-token (string index end scratch tokens idiom)
+      "Process characters that may make up part of a symbol token. This is complex enough it is implementd here instead of directly inside the April idiom spec."
+      (let ((symout) (path-start) (pre-symbol))
+        (unless id-vars (setf id-vars (rest (assoc :variable (idiom-symbols idiom)))))
+        (unless id-cons (setf id-cons (rest (assoc :constant (idiom-symbols idiom)))))
+
+        ;; match regular symbols used for variable/function names; may continue a path
+        (unless (or symout (not (match-varisym-char (aref string index) (not path-start))))
+          (when (char= #\⎕ (aref string index)) (setf pre-symbol t)) ;; identify quad-prefixed names
+
+          ;; if a path is already started, as for ⍵.a.b, the symbol may begin with .,
+          ;; otherwise the symbol is not valid; paths also may not start with a number
+          (when (and (or path-start (not (char= #\. (aref string index))))
+                     (not (digit-char-p (aref string index))))
+
+            (vector-push (aref string index) scratch)
+            (incf index)
+
+            (loop :while (and (< index end) (match-varisym-char (aref string index)))
+                  :do (vector-push (aref string index) scratch)
+                      (incf index))
+
+            ;; in the case of a ⎕ quad-prefixed name, fetch the referenced symbol
+            (when pre-symbol (setf pre-symbol (find-symbol (string-upcase scratch) "APRIL")))
+            (setf symout (or (and pre-symbol (or (getf id-vars pre-symbol)
+                                                 (getf id-cons pre-symbol)))
+                             (intern scratch)))))
+        
+        (and symout (values (cons symout tokens) index))))))
