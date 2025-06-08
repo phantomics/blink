@@ -122,6 +122,9 @@
            (make-instance 'vacomp-each :left  (vacmp-left varray) :alpha (vacmp-alpha varray)
                                        :omega (make-instance 'vader-enclose :base (vacmp-omega varray)))))))))
 
+(defun within-symlist (tokens)
+  (and (listp (first tokens)) (eq :sy (caar tokens))))
+
 (defun process-glyph-token (props string index end scratch tokens idiom)
   (declare (ignore scratch end))
   ;;; (print (list :x index string (< index (length string))))
@@ -151,9 +154,9 @@
                        (determine-symbolic-form idiom char))
                   (and prefix (cons prefix (if tag (list tag char)
                                                (list char)))))))
-    (when out (push out tokens))
-    (when operator-mod (push operator-mod tokens))
-    (values tokens (1+ index))))
+    (when out (push out tokens)
+          (when operator-mod (push operator-mod tokens)))
+    (values tokens (+ index (if out 1 0)))))
 
 (let ((id-vars) (id-cons))
   (flet ((match-varisym-char (char &optional first)
@@ -163,19 +166,21 @@
     
     (defun process-symbol-token (props string index end scratch tokens idiom)
       "Process characters that may make up part of a symbol token. This is complex enough it is implemented here instead of directly inside the April idiom spec."
-      (let ((symout) (path-start) (pre-symbol))
+      (let ((symout) (path-start) (pre-symbol) (quoted-symbol))
         (unless id-vars (setf id-vars (rest (assoc :variable (idiom-symbols idiom)))))
         (unless id-cons (setf id-cons (rest (assoc :constant (idiom-symbols idiom)))))
 
+        (when (char= #\` (aref string index)) ;; recognize a quoted symbol
+          (setf quoted-symbol t)
+          (incf index))
+        
         ;; match regular symbols used for variable/function names; may continue a path
         (unless (or symout (not (match-varisym-char (aref string index) (not path-start))))
-          (when (char= #\` (aref string index)) (setf quoted-symbol t)) ;; identify quad-prefixed names
 
           ;; if a path is already started, as for ⍵.a.b, the symbol may begin with .,
           ;; otherwise the symbol is not valid; paths also may not start with a number
           (when (and (or path-start (not (char= #\. (aref string index))))
                      (not (digit-char-p (aref string index))))
-
             (vector-push (aref string index) scratch)
             (incf index)
 
@@ -188,5 +193,16 @@
             (setf symout (or (and pre-symbol (or (getf id-vars pre-symbol)
                                                  (getf id-cons pre-symbol)))
                              (intern scratch)))))
+
+        ;; (print (list :qu quoted-symbol tokens))
         
-        (and symout (values (cons symout tokens) index))))))
+        (if quoted-symbol (setf symout (list 'quote symout))
+            (when (within-symlist tokens)
+              (error "Non-symbol found within a symbol vector.")))
+        
+        (if quoted-symbol (if (within-symlist tokens)
+                              (values (cons (cons :sy (cons symout (cdar tokens)))
+                                            (rest tokens))
+                                      index)
+                              (values (cons (list :sy symout) tokens) index))
+            (and symout (values (cons symout tokens) index)))))))

@@ -42,6 +42,8 @@
 
                                            (and (not (zerop (fill-pointer scratch)))
                                                 (let ((out (parse-apl-number-string scratch)))
+                                                  (when (within-symlist tokens)
+                                                    (error "Number entered in a symbol vector."))
                                                   (and out (values (cons out tokens) index))))))
                               :charset "._eEjJrR")
            (token   :glyph    :process #'process-glyph-token :spacers (coerce '(#\  #\Tab) 'string))
@@ -72,9 +74,11 @@
                               :start (lambda (string index)
                                        (and (char= #\" (aref string index))
                                             (lambda (string index) (char= #\" (aref string index)))))
-                              :format (lambda (string start end)
+                              :format (lambda (string start end collected)
                                         (let ((length (- end start 1)))
-                                          (if (= 1 length) (aref string (1+ start))
+                                          (if (= 1 length) ;; (aref string (1+ start))
+                                              (cons (cons (aref string (1+ start)) (first collected))
+                                                    (rest collected))
                                               ;; expressing a one-length string like 'a' returns character #\a
                                               (let ((output))
                                                 (loop :for i :from (1+ start) :below end
@@ -84,8 +88,9 @@
                                                       :do (setf (aref output ix) (aref string i))
                                                           (when (char= #\" (aref string i))
                                                             (incf i)))
-                                                output)))))
-           (section :closure  :delimit "()"
+                                                (cons (cons output (first collected))
+                                                      (rest collected)))))))
+           (section :closure  :bounds "()"
                               :create (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
                                         (declare (ignore type))
@@ -99,7 +104,7 @@
                                                   (cdddr collected))
                                             (cons (cons (first collected) (second collected))
                                                   (cdddr collected)))))
-           (section :function :delimit "{}"
+           (section :function :bounds "{}"
                               :create (lambda (collected) (cons nil (cons nil collected)))
                               :divide (lambda (type collected)
                                         (declare (ignore type))
@@ -110,7 +115,7 @@
                                                           (reverse (foldin collected)))
                                                     (third collected))
                                               (cdddr collected))))
-           (section :axes     :delimit "[]"
+           (section :axes     :bounds "[]"
                               :create (lambda (collected) (cons nil (cons nil (cons nil collected))))
                               :divide (lambda (type collected)
                                         (declare (ignore type))
