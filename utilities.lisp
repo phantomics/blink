@@ -13,6 +13,12 @@
 ;;                              :comparison-tolerance *comparison-tolerance* :division-method *division-method*
 ;;                              :rngs *rngs*))
 
+;; todo: NSes, dictionaries, remaining function , ::
+;; ."\\d"
+;; \l filename
+
+;; NGN issues: flat namespace stuff, some funny spacing conventions: empty line returns nil
+
 (defvar *system-variables* '(:index-origin *index-origin* :print-precision *print-precision*
                              :comparison-tolerance *comparison-tolerance* ;; :rngs *rngs*
                              ))
@@ -97,40 +103,11 @@
   (let ((shape (shape-of item)))
     (if shape 0 1)))
 
-(defun operate-each (operand)
-  (op-compose 'vacomp-each :left operand))
-
-(defun operate-variant (operand)
-  "This is a variant operator used to implement the combinatorics of ':, /: and \\:. It transforms the three adverbs into their variants"
-  (lambda (omega &optional alpha)
-    (let ((varray (funcall operand omega alpha))
-          (count (ash (first (shape-of omega)) -1)))
-      (flet ((left (oo aa) (declare (ignore aa)) oo))
-        (typecase varray
-          (vacomp-each
-           ;; (let ((arvec (make-instance 'vapri-apro-vector :repeat 2 :origin 1 :number count)))
-           ;; (make-instance 'vacomp-each
-           ;;                :left  (lambda (item) (make-instance 'vacomp-reduce :left operand :omega item))
-           ;;                :omega (make-instance 'vader-partition :argument arvec :axis :last :base omega))
-           (make-instance 'vacomp-each
-                          :left  (lambda (item) (make-instance 'vacomp-reduce :left operand :omega item))
-                          :omega (make-instance 'vacomp-stencil :right 2 :omega omega :left #'left)))
-          (vacomp-reduce
-           (make-instance 'vacomp-each :left  (vacmp-left varray) :omega (vacmp-omega varray)
-                                       :alpha (make-instance 'vader-enclose :base (vacmp-alpha varray))))
-          (vacomp-scan
-           (make-instance 'vacomp-each :left  (vacmp-left varray) :alpha (vacmp-alpha varray)
-                                       :omega (make-instance 'vader-enclose :base (vacmp-omega varray)))))))))
-
-(defun within-symlist (tokens)
-  (and (listp (first tokens)) (eq :sy (caar tokens))))
-
 (defun process-glyph-token (props string index end scratch tokens idiom)
   (declare (ignore scratch end))
   ;;; (print (list :x index string (< index (length string))))
-  (let* ((operator-mod) (char (aref string index))
+  (let* ((char (aref string index))
          (prior-space (and (not (zerop index))
-                           ;; (member (aref string (1- index)) '(#\  #\Tab) :test #'char=)
                            (find-char string (1- index) (getf props :spacers))))
          (prefix (cond ((and (of-lexicons idiom char :operators)
                              (not (or prior-space (zerop index))) ;; adverbs may not have a preceding space
@@ -140,7 +117,7 @@
                         (when (char= #\: (aref string (1+ index)))
                           ;; set the operator modification in case it's followed by :
                           ;; there can be no space between the adverb character and :, as per K norms
-                          (setf operator-mod '(:op :lateral #\⍠))
+                          (setf char (case char (#\' #\⍞) (#\/ #\⍁) (#\\ #\⍂)))
                           (incf index)) ;; increment the index to skip past the following :
                         :op)
                        ((of-lexicons idiom char :functions)
@@ -154,9 +131,11 @@
                        (determine-symbolic-form idiom char))
                   (and prefix (cons prefix (if tag (list tag char)
                                                (list char)))))))
-    (when out (push out tokens)
-          (when operator-mod (push operator-mod tokens)))
+    (when out (push out tokens))
     (values tokens (+ index (if out 1 0)))))
+
+(defun within-symlist (tokens)
+  (and (listp (first tokens)) (eq :sy (caar tokens))))
 
 (let ((id-vars) (id-cons))
   (flet ((match-varisym-char (char &optional first)
@@ -206,3 +185,22 @@
                                       index)
                               (values (cons (list :sy symout) tokens) index))
             (and symout (values (cons symout tokens) index)))))))
+
+(defun operate-each (operand)
+  (op-compose 'vacomp-each :left operand))
+
+(defun operate-each-pair (operand)
+  (flet ((left (oo aa) (declare (ignore aa)) oo))
+    (lambda (omega &optional alpha)
+      (print (list :om omega))
+      (make-instance 'vacomp-each
+                     :left  (lambda (item) (make-instance 'vacomp-reduce :left operand :omega item))
+                     :omega (make-instance 'vacomp-stencil :right 2 :omega omega :left #'left)))))
+    
+(defun operate-each-right (operand)
+  (lambda (omega &optional alpha)
+    (make-instance 'vacomp-each :left operand :omega omega :alpha (make-instance 'vader-enclose :base alpha))))
+
+(defun operate-each-left (operand)
+  (lambda (omega &optional alpha)
+    (make-instance 'vacomp-each :left operand :alpha alpha :omega (make-instance 'vader-enclose :base omega))))

@@ -423,14 +423,18 @@
                                          '(:axis))))
       (tests (is "+\\5" 5)
              (is "+\\1 2 3" #(1 3 6))))
+  ( ⍞ (has :title "Each Pair")
+      (lateral (lambda (operand) `(operate-each-pair (sub-lex ,operand))))
+      (test (is "+':2 3 4 5 6" #(5 7 9 11))))
 
-  ( ⍠ (has :title "Amend / Call Compose")
-      (lateral (lambda (operand) `(operate-variant (sub-lex ,operand))))
+  ( ⍁ (has :title "Each Right")
+      (lateral (lambda (operand) `(operate-each-right (sub-lex ,operand))))
       (test (is "1 2+/:1 2 3 4 5" #(#(2 3) #(3 4) #(4 5) #(5 6) #(6 7)))
-            (is "1 2+\\:1 2 3 4 5" #(#(2 3 4 5 6) #(3 4 5 6 7)))
-            (is "2 3 4,/:5 6 7" #(#(2 3 4 5) #(2 3 4 6) #(2 3 4 7)) ))))
-
- )
+            (is "2 3 4,/:5 6 7" #(#(2 3 4 5) #(2 3 4 6) #(2 3 4 7)))))
+          
+  ( ⍂ (has :title "Each Left")
+      (lateral (lambda (operand) `(operate-each-left (sub-lex ,operand))))
+      (test (is "1 2+\\:1 2 3 4 5" #(#(2 3 4 5 6) #(3 4 5 6 7)))))))
 
 (blink-create-workspace common)
 (blink-create-workspace unit-test-staging)
